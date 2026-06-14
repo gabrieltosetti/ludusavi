@@ -371,9 +371,10 @@ impl Translator {
 
     pub fn window_title(&self) -> String {
         let name = self.app_name();
+        let version = format!("{}-tosetti-build", *crate::prelude::VERSION);
         match VARIANT {
-            Some(variant) => format!("{} v{} ({})", name, *crate::prelude::VERSION, variant),
-            None => format!("{} v{}", name, *crate::prelude::VERSION),
+            Some(variant) => format!("{name} v{version} ({variant})"),
+            None => format!("{name} v{version}"),
         }
     }
 
@@ -391,6 +392,16 @@ impl Translator {
 
     pub fn unlock_button(&self) -> String {
         translate("button-unlock")
+    }
+
+    pub fn delete_button(&self) -> String {
+        translate("button-delete")
+    }
+
+    pub fn confirm_delete_backup(&self, game: &str) -> String {
+        let mut args = FluentArgs::new();
+        args.set(GAME, game);
+        translate_args("confirm-delete-backup", &args)
     }
 
     pub fn handle_error(&self, error: &Error) -> String {

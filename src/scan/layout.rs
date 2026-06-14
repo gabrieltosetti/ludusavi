@@ -2029,6 +2029,315 @@ impl GameLayout {
         self.modify_backup(id, |x| x.locked = locked, |x| x.locked = locked);
     }
 
+    pub fn delete_backup(&mut self, id: &BackupId) -> bool {
+        let target = match id {
+            BackupId::Latest => self.find_by_id_flattened(id).map(|x| x.id()),
+            BackupId::Named(_) => self.find_by_id(id).map(|_| id.clone()),
+        };
+        let Some(BackupId::Named(target)) = target else {
+            return false;
+        };
+
+        for full_index in 0..self.mapping.backups.len() {
+            if self.mapping.backups[full_index].name == target {
+                if self.mapping.backups[full_index].children.is_empty() {
+                    self.mapping.backups.remove(full_index);
+                } else if let Err(e) = self.promote_first_child_backup(full_index) {
+                    log::error!(
+                        "[{}] unable to delete backup while preserving descendants: {e}",
+                        self.mapping.name
+                    );
+                    return false;
+                }
+                self.save();
+                self.prune_irrelevant_parents();
+                return true;
+            }
+
+            let Some(diff_index) = self.mapping.backups[full_index]
+                .children
+                .iter()
+                .position(|diff| diff.name == target)
+            else {
+                continue;
+            };
+
+            self.mapping.backups[full_index].children.remove(diff_index);
+            self.save();
+            self.prune_irrelevant_parents();
+            return true;
+        }
+
+        false
+    }
+
+    fn promote_first_child_backup(&mut self, full_index: usize) -> Result<(), AnyError> {
+        let full = self.mapping.backups[full_index].clone();
+        let Some(first_child) = full.children.front().cloned() else {
+            return Err("No differential backup to promote".into());
+        };
+
+        let mut files = full.files.clone();
+        for (file, change) in &first_child.files {
+            match change {
+                Some(change) => {
+                    files.insert(file.clone(), change.clone());
+                }
+                None => {
+                    files.remove(file);
+                }
+            }
+        }
+
+        let registry = first_child.registry.clone().unwrap_or_else(|| full.registry.clone());
+        let inherited_files = files
+            .keys()
+            .filter(|file| first_child.file((*file).clone()) == BackupInclusion::Inherited)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        self.materialize_promoted_backup(&full, &first_child, &inherited_files, first_child.registry.is_none())?;
+
+        let promoted = FullBackup {
+            name: first_child.name,
+            when: first_child.when,
+            os: first_child.os,
+            comment: first_child.comment,
+            locked: full.locked || first_child.locked,
+            files,
+            registry,
+            children: full.children.into_iter().skip(1).collect(),
+        };
+        self.mapping.backups[full_index] = promoted;
+
+        Ok(())
+    }
+
+    fn materialize_promoted_backup(
+        &self,
+        full: &FullBackup,
+        diff: &DifferentialBackup,
+        inherited_files: &[String],
+        inherit_registry: bool,
+    ) -> Result<(), AnyError> {
+        match diff.format() {
+            BackupFormat::Simple => {
+                for file in inherited_files {
+                    self.copy_backup_file_to_simple(&full.name, &full.format(), file, &diff.name)?;
+                }
+                if inherit_registry && full.registry.hash.is_some() {
+                    self.copy_backup_registry_to_simple(&full.name, &full.format(), &diff.name)?;
+                }
+            }
+            BackupFormat::Zip => {
+                self.materialize_promoted_zip(full, diff, inherited_files, inherit_registry)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn copy_backup_file_to_simple(
+        &self,
+        source_backup: &str,
+        source_format: &BackupFormat,
+        mapping_key: &str,
+        target_backup: &str,
+    ) -> Result<(), AnyError> {
+        let original_path = StrictPath::new(mapping_key.to_string());
+        let target = self
+            .mapping
+            .game_file_immutable(&self.path, &original_path, target_backup);
+
+        match source_format {
+            BackupFormat::Simple => {
+                let source = self
+                    .mapping
+                    .game_file_immutable(&self.path, &original_path, source_backup);
+                source.copy_to_path(&self.mapping.name, &target)?;
+            }
+            BackupFormat::Zip => {
+                let archive_path = self.path.joined(source_backup);
+                let mut archive = zip::ZipArchive::new(archive_path.open()?)?;
+                let scan_key = StrictPath::new(self.mapping.game_file_for_zip_immutable(&original_path));
+                self.restore_file_from_zip(&target, &scan_key, &mut archive)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn copy_backup_registry_to_simple(
+        &self,
+        source_backup: &str,
+        source_format: &BackupFormat,
+        target_backup: &str,
+    ) -> Result<(), AnyError> {
+        match source_format {
+            BackupFormat::Simple => {
+                for format in registry::Format::ALL {
+                    let source = self.path.joined(source_backup).joined(format.filename());
+                    if source.is_file() {
+                        let target = self.path.joined(target_backup).joined(format.filename());
+                        source.copy_to_path(&self.mapping.name, &target)?;
+                    }
+                }
+            }
+            BackupFormat::Zip => {
+                let archive_path = self.path.joined(source_backup);
+                let mut archive = zip::ZipArchive::new(archive_path.open()?)?;
+                for format in registry::Format::ALL {
+                    if archive.by_name(format.filename()).is_ok() {
+                        let target = self.path.joined(target_backup).joined(format.filename());
+                        let scan_key = StrictPath::new(format.filename().to_string());
+                        self.restore_file_from_zip(&target, &scan_key, &mut archive)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn materialize_promoted_zip(
+        &self,
+        full: &FullBackup,
+        diff: &DifferentialBackup,
+        inherited_files: &[String],
+        inherit_registry: bool,
+    ) -> Result<(), AnyError> {
+        let target = self.path.joined(&diff.name);
+        let temporary = self.path.joined(format!("{}.promote.tmp", &diff.name));
+        let temporary_file = temporary.create()?;
+        let mut zip = zip::ZipWriter::new(temporary_file);
+
+        for file in inherited_files {
+            self.write_backup_file_to_zip(&mut zip, &full.name, &full.format(), file)?;
+        }
+
+        for (file, change) in &diff.files {
+            if change.is_some() {
+                self.write_backup_file_to_zip(&mut zip, &diff.name, &diff.format(), file)?;
+            }
+        }
+
+        if inherit_registry && full.registry.hash.is_some() {
+            self.write_backup_registry_to_zip(&mut zip, &full.name, &full.format())?;
+        } else if diff
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.hash.as_ref())
+            .is_some()
+        {
+            self.write_backup_registry_to_zip(&mut zip, &diff.name, &diff.format())?;
+        }
+
+        zip.finish()?;
+        target.remove()?;
+        temporary.move_to(&target)?;
+
+        Ok(())
+    }
+
+    fn write_backup_file_to_zip<W: Write + std::io::Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+        source_backup: &str,
+        source_format: &BackupFormat,
+        mapping_key: &str,
+    ) -> Result<(), AnyError> {
+        let original_path = StrictPath::new(mapping_key.to_string());
+        let entry = self.mapping.game_file_for_zip_immutable(&original_path);
+
+        match source_format {
+            BackupFormat::Simple => {
+                let source = self
+                    .mapping
+                    .game_file_immutable(&self.path, &original_path, source_backup);
+                self.write_file_to_zip(zip, &source, &entry)?;
+            }
+            BackupFormat::Zip => {
+                let archive_path = self.path.joined(source_backup);
+                let mut archive = zip::ZipArchive::new(archive_path.open()?)?;
+                self.write_zip_entry_to_zip(zip, &mut archive, &entry)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_backup_registry_to_zip<W: Write + std::io::Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+        source_backup: &str,
+        source_format: &BackupFormat,
+    ) -> Result<(), AnyError> {
+        match source_format {
+            BackupFormat::Simple => {
+                for format in registry::Format::ALL {
+                    let source = self.path.joined(source_backup).joined(format.filename());
+                    if source.is_file() {
+                        self.write_file_to_zip(zip, &source, format.filename())?;
+                    }
+                }
+            }
+            BackupFormat::Zip => {
+                let archive_path = self.path.joined(source_backup);
+                let mut archive = zip::ZipArchive::new(archive_path.open()?)?;
+                for format in registry::Format::ALL {
+                    if archive.by_name(format.filename()).is_ok() {
+                        self.write_zip_entry_to_zip(zip, &mut archive, format.filename())?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_file_to_zip<W: Write + std::io::Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+        source: &StrictPath,
+        entry: &str,
+    ) -> Result<(), AnyError> {
+        let mtime = source.get_mtime_zip()?;
+        #[cfg(target_os = "windows")]
+        let mode: Option<u32> = None;
+        #[cfg(not(target_os = "windows"))]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            source.metadata().map(|metadata| metadata.permissions().mode()).ok()
+        };
+        let options = match mode {
+            Some(mode) => zip::write::FileOptions::default()
+                .last_modified_time(mtime)
+                .unix_permissions(mode),
+            None => zip::write::FileOptions::default().last_modified_time(mtime),
+        };
+
+        zip.start_file(entry, options)?;
+        let mut source = std::io::BufReader::new(source.open()?);
+        std::io::copy(&mut source, zip)?;
+
+        Ok(())
+    }
+
+    fn write_zip_entry_to_zip<W: Write + std::io::Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+        archive: &mut zip::ZipArchive<std::fs::File>,
+        entry: &str,
+    ) -> Result<(), AnyError> {
+        let mut source = archive.by_name(entry)?;
+        let options = zip::write::FileOptions::default().last_modified_time(source.last_modified());
+
+        zip.start_file(entry, options)?;
+        std::io::copy(&mut source, zip)?;
+
+        Ok(())
+    }
+
     /// Returns whether the backup is valid.
     pub fn validate(&self, backup_id: BackupId) -> bool {
         if let Some((backup, diff)) = self.find_by_id(&backup_id) {
@@ -3347,6 +3656,109 @@ mod tests {
                 ),
                 Some(repo_file_raw("tests/backup/game1")),
             )
+        }
+
+        fn temp_game_path(test: &str) -> StrictPath {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("ludusavi-{test}-{}-{unique}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            StrictPath::new(path.display().to_string())
+        }
+
+        fn create_backup_dir(base: &StrictPath, backup: &str) {
+            let file = base.joined(backup).joined("drive-X").joined("save.dat");
+            file.create_parent_dir().unwrap();
+            file.write_with_content("save").unwrap();
+        }
+
+        #[test]
+        fn can_delete_differential_backup() {
+            let path = temp_game_path("delete-differential-backup");
+            create_backup_dir(&path, "backup-full");
+            create_backup_dir(&path, "backup-diff");
+
+            let mut layout = GameLayout::new(
+                path.clone(),
+                IndividualMapping {
+                    name: "game1".to_string(),
+                    backups: VecDeque::from(vec![FullBackup {
+                        name: "backup-full".into(),
+                        when: now(),
+                        children: VecDeque::from([DifferentialBackup {
+                            name: "backup-diff".into(),
+                            when: now(),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            );
+
+            assert!(layout.delete_backup(&BackupId::Named("backup-diff".into())));
+            assert!(layout.find_by_id(&BackupId::Named("backup-full".into())).is_some());
+            assert!(layout.find_by_id(&BackupId::Named("backup-diff".into())).is_none());
+            assert!(path.joined("backup-full").is_dir());
+            assert!(!path.joined("backup-diff").exists());
+
+            let _ = path.remove();
+        }
+
+        #[test]
+        fn can_delete_full_backup_with_children() {
+            let path = temp_game_path("delete-full-backup");
+            create_backup_dir(&path, "backup-full");
+
+            let mut layout = GameLayout::new(
+                path.clone(),
+                IndividualMapping {
+                    name: "game1".to_string(),
+                    backups: VecDeque::from(vec![FullBackup {
+                        name: "backup-full".into(),
+                        when: now(),
+                        files: btree_map! {
+                            "X:/save.dat".into(): IndividualMappingFile {
+                                hash: "save".into(),
+                                size: 4,
+                            },
+                        },
+                        children: VecDeque::from([DifferentialBackup {
+                            name: "backup-diff".into(),
+                            when: now(),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            );
+
+            assert!(layout.delete_backup(&BackupId::Named("backup-full".into())));
+            assert!(layout.find_by_id(&BackupId::Named("backup-full".into())).is_none());
+            assert!(layout.find_by_id(&BackupId::Named("backup-diff".into())).is_some());
+            assert_eq!("backup-diff", layout.mapping.backups[0].name);
+            assert_eq!(
+                Some(&IndividualMappingFile {
+                    hash: "save".into(),
+                    size: 4,
+                }),
+                layout.mapping.backups[0].files.get("X:/save.dat"),
+            );
+            assert!(!path.joined("backup-full").exists());
+            assert_eq!(
+                "save",
+                path.joined("backup-diff")
+                    .joined("drive-X")
+                    .joined("save.dat")
+                    .try_read()
+                    .unwrap(),
+            );
+
+            let _ = path.remove();
         }
 
         #[test]

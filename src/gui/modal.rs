@@ -23,6 +23,7 @@ use crate::{
         config::{Config, Root},
         manifest,
     },
+    scan::BackupId,
 };
 
 const CHANGES_PER_PAGE: usize = 500;
@@ -122,6 +123,7 @@ pub enum Kind {
     Exiting,
     ConfirmBackup,
     ConfirmRestore,
+    ConfirmDeleteBackup,
     NoMissingRoots,
     ConfirmAddMissingRoots,
     BackupValidation,
@@ -149,6 +151,10 @@ pub enum Modal {
     },
     ConfirmRestore {
         games: Option<GameSelection>,
+    },
+    ConfirmDeleteBackup {
+        game: String,
+        backup: BackupId,
     },
     NoMissingRoots,
     ConfirmAddMissingRoots(Vec<Root>),
@@ -188,6 +194,7 @@ impl Modal {
             Modal::Exiting => Kind::Exiting,
             Modal::ConfirmBackup { .. } => Kind::ConfirmBackup,
             Modal::ConfirmRestore { .. } => Kind::ConfirmRestore,
+            Modal::ConfirmDeleteBackup { .. } => Kind::ConfirmDeleteBackup,
             Modal::NoMissingRoots => Kind::NoMissingRoots,
             Modal::ConfirmAddMissingRoots(..) => Kind::ConfirmAddMissingRoots,
             Modal::BackupValidation { .. } => Kind::BackupValidation,
@@ -210,6 +217,7 @@ impl Modal {
             Modal::Exiting => false,
             Modal::ConfirmBackup { .. } => false,
             Modal::ConfirmRestore { .. } => false,
+            Modal::ConfirmDeleteBackup { .. } => false,
             Modal::NoMissingRoots => false,
             Modal::ConfirmAddMissingRoots(..) => false,
             Modal::BackupValidation { .. } => false,
@@ -234,6 +242,7 @@ impl Modal {
             | Self::ActiveScanGames => ModalVariant::Info,
             Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::ConfirmAddMissingRoots(..)
             | Self::ConfigureFtpRemote { .. }
             | Self::ConfigureSmbRemote { .. }
@@ -265,6 +274,7 @@ impl Modal {
                 TRANSLATOR.confirm_backup(&config.backup.path, config.backup.path.exists(), true)
             }
             Self::ConfirmRestore { .. } => TRANSLATOR.confirm_restore(&config.restore.path, true),
+            Self::ConfirmDeleteBackup { game, .. } => TRANSLATOR.confirm_delete_backup(game),
             Self::NoMissingRoots => TRANSLATOR.no_missing_roots(),
             Self::ConfirmAddMissingRoots(missing) => TRANSLATOR.confirm_add_missing_roots(missing),
             Self::AppUpdate { release } => TRANSLATOR.new_version_available(release.version.to_string().as_str()),
@@ -319,6 +329,10 @@ impl Modal {
                 preview: false,
                 games: games.clone(),
             })),
+            Self::ConfirmDeleteBackup { game, backup } => Some(Message::DeleteBackup {
+                game: game.clone(),
+                backup: backup.clone(),
+            }),
             Self::ConfirmAddMissingRoots(missing) => Some(Message::ConfirmAddMissingRoots(missing.clone())),
             Self::AppUpdate { release } => Some(Message::OpenUrlAndCloseModal(release.url.clone())),
             Self::UpdatingManifest => None,
@@ -425,6 +439,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::UpdatingManifest
@@ -451,6 +466,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::AppUpdate { .. }
@@ -616,6 +632,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::BackupValidation { .. }
@@ -655,6 +672,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::BackupValidation { .. }
@@ -678,6 +696,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::BackupValidation { .. }
@@ -699,6 +718,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::BackupValidation { .. }
@@ -720,6 +740,7 @@ impl Modal {
             | Self::Exiting
             | Self::ConfirmBackup { .. }
             | Self::ConfirmRestore { .. }
+            | Self::ConfirmDeleteBackup { .. }
             | Self::NoMissingRoots
             | Self::ConfirmAddMissingRoots(_)
             | Self::BackupValidation { .. }

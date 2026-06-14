@@ -2594,6 +2594,22 @@ impl App {
                     games: Some(GameSelection::single(game)),
                 })
             }
+            Message::DeleteBackup { game, backup } => {
+                let deleted = self.restore_screen.log.delete_backup(&game, &backup);
+                self.backups_to_restore.remove(&game);
+
+                if deleted {
+                    Task::batch([
+                        self.close_modal(),
+                        self.handle_restore(RestorePhase::Start {
+                            preview: true,
+                            games: Some(GameSelection::single(game)),
+                        }),
+                    ])
+                } else {
+                    self.close_modal()
+                }
+            }
             Message::GameAction { action, game } => match action {
                 GameAction::PreviewBackup => self.handle_backup(BackupPhase::Start {
                     preview: true,
@@ -2640,6 +2656,18 @@ impl App {
                         self.save_backup(&game);
                     }
                     Task::none()
+                }
+                GameAction::Delete => {
+                    let backup = self
+                        .backups_to_restore
+                        .get(&game)
+                        .cloned()
+                        .or_else(|| self.restore_screen.log.selected_backup_id(&game));
+
+                    match backup {
+                        Some(backup) => self.show_modal(Modal::ConfirmDeleteBackup { game, backup }),
+                        None => Task::none(),
+                    }
                 }
                 GameAction::MakeAlias => self.customize_game_as_alias(game),
             },

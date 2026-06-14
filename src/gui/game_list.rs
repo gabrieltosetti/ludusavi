@@ -29,7 +29,8 @@ use crate::{
         manifest::{self, Manifest, Os},
     },
     scan::{
-        BackupInfo, DuplicateDetector, OperationStatus, ScanChange, ScanInfo, ScanKind, game_filter, layout::GameLayout,
+        BackupId, BackupInfo, DuplicateDetector, OperationStatus, ScanChange, ScanInfo, ScanKind, game_filter,
+        layout::GameLayout,
     },
 };
 
@@ -905,6 +906,23 @@ impl GameList {
         backup.set_locked(new);
 
         true
+    }
+
+    pub fn selected_backup_id(&self, game: &str) -> Option<BackupId> {
+        let index = self.find_game(game)?;
+        self.entries[index].scan_info.backup.as_ref().map(|backup| backup.id())
+    }
+
+    pub fn delete_backup(&mut self, game: &str, backup: &BackupId) -> bool {
+        let Some(index) = self.find_game(game) else {
+            return false;
+        };
+        let entry = &mut self.entries[index];
+        let Some(layout) = &mut entry.game_layout else {
+            return false;
+        };
+
+        layout.delete_backup(backup)
     }
 
     pub fn save_layout(&mut self, game: &str) {

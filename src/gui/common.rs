@@ -15,7 +15,7 @@ use crate::{
         manifest::{self, Manifest, ManifestUpdate},
     },
     scan::{
-        BackupInfo, Launchers, ScanInfo, ScanKind, SteamShortcuts, game_filter,
+        BackupId, BackupInfo, Launchers, ScanInfo, ScanKind, SteamShortcuts, game_filter,
         layout::{Backup, BackupLayout, GameLayout},
         registry::RegistryItem,
     },
@@ -163,6 +163,10 @@ pub enum Message {
     SelectedBackupToRestore {
         game: String,
         backup: Backup,
+    },
+    DeleteBackup {
+        game: String,
+        backup: BackupId,
     },
     GameAction {
         action: GameAction,
@@ -820,6 +824,7 @@ pub enum GameAction {
     Comment,
     Lock,
     Unlock,
+    Delete,
     MakeAlias,
 }
 
@@ -861,6 +866,8 @@ impl GameAction {
             } else {
                 options.push(Self::Lock);
             }
+
+            options.push(Self::Delete);
         }
 
         if !invented {
@@ -885,6 +892,7 @@ impl GameAction {
             GameAction::Comment => Icon::Comment,
             GameAction::Lock => Icon::Lock,
             GameAction::Unlock => Icon::LockOpen,
+            GameAction::Delete => Icon::Delete,
             GameAction::MakeAlias => Icon::Edit,
         }
     }
@@ -913,6 +921,7 @@ impl ToString for GameAction {
             Self::Comment => TRANSLATOR.comment_button(),
             Self::Lock => TRANSLATOR.lock_button(),
             Self::Unlock => TRANSLATOR.unlock_button(),
+            Self::Delete => TRANSLATOR.delete_button(),
             Self::MakeAlias => TRANSLATOR.alias_label(),
         }
     }

@@ -47,6 +47,7 @@ button-exit = Exit
 button-comment = Comment
 button-lock = Lock
 button-unlock = Unlock
+button-delete = Delete
 # This opens a download page.
 button-get-app = Get {$app}
 button-validate = Validate
@@ -58,6 +59,7 @@ button-upload = Upload
 button-ignore = Ignore
 
 no-roots-are-configured = Add some roots to back up even more data.
+confirm-delete-backup = Delete the selected backup for {$game}? This cannot be undone.
 
 config-is-invalid = Error: The config file is invalid.
 manifest-is-invalid = Error: The manifest file is invalid.

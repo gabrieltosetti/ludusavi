@@ -41,6 +41,7 @@ button-exit = Sair
 button-comment = Comentário
 button-lock = Travar
 button-unlock = Destravar
+button-delete = Excluir
 # This opens a download page.
 button-get-app = Obter { $app }
 button-validate = Validar
@@ -51,6 +52,7 @@ button-download = Download
 button-upload = Upload
 button-ignore = Ignorar
 no-roots-are-configured = Adicione algumas raízes para armazenar ainda mais dados.
+confirm-delete-backup = Excluir o backup selecionado de { $game }? Isso não pode ser desfeito.
 config-is-invalid = Erro: O arquivo de configuração é inválido.
 manifest-is-invalid = Erro: O arquivo de manifesto é inválido.
 manifest-cannot-be-updated = Erro: Não foi possível verificar se há uma atualização no manifesto. Sua conexão com a Internet está inativa?

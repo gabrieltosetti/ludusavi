@@ -77,3 +77,47 @@ Also install the Crowdin CLI tool manually.
 * Run `invoke release-winget`
   * This will automatically push a branch to a fork of https://github.com/microsoft/winget-pkgs .
   * Manually open a pull request for that branch.
+
+### Building Windows `.exe` from WSL
+These steps were tested from Ubuntu on WSL and produce a Windows executable
+without installing the Rust build environment on Windows.
+
+#### Dependencies (one-time)
+Install the Linux system packages:
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential \
+  clang \
+  cmake \
+  curl \
+  git \
+  libclang-dev \
+  libssl-dev \
+  lld \
+  llvm-dev \
+  pkg-config
+```
+
+Install Rust with rustup:
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Install the Windows MSVC target and `cargo-xwin`:
+```bash
+rustup target add x86_64-pc-windows-msvc
+cargo install cargo-xwin
+```
+
+#### Build
+From the repository root:
+```bash
+cargo xwin build --release --target x86_64-pc-windows-msvc
+```
+
+The executable will be generated at:
+```text
+target/x86_64-pc-windows-msvc/release/ludusavi.exe
+```
