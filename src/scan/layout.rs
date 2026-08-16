@@ -2049,8 +2049,7 @@ impl GameLayout {
                     );
                     return false;
                 }
-                self.save();
-                self.prune_irrelevant_parents();
+                self.finalize_backup_deletion();
                 return true;
             }
 
@@ -2063,12 +2062,31 @@ impl GameLayout {
             };
 
             self.mapping.backups[full_index].children.remove(diff_index);
-            self.save();
-            self.prune_irrelevant_parents();
+            self.finalize_backup_deletion();
             return true;
         }
 
         false
+    }
+
+    fn finalize_backup_deletion(&self) {
+        if self.mapping.backups.is_empty() {
+            log::debug!(
+                "[{}] Removing game backup directory after deleting its last backup: {:?}",
+                self.mapping.name,
+                self.path
+            );
+            if let Err(e) = self.path.remove() {
+                log::error!(
+                    "[{}] Unable to remove game backup directory after deleting its last backup: {:?} | {e}",
+                    self.mapping.name,
+                    self.path
+                );
+            }
+        } else {
+            self.save();
+            self.prune_irrelevant_parents();
+        }
     }
 
     fn promote_first_child_backup(&mut self, full_index: usize) -> Result<(), AnyError> {
@@ -3706,6 +3724,30 @@ mod tests {
             assert!(!path.joined("backup-diff").exists());
 
             let _ = path.remove();
+        }
+
+        #[test]
+        fn deleting_last_backup_removes_game_directory() {
+            let path = temp_game_path("delete-last-backup");
+            create_backup_dir(&path, "backup-full");
+
+            let mut layout = GameLayout::new(
+                path.clone(),
+                IndividualMapping {
+                    name: "game1".to_string(),
+                    backups: VecDeque::from(vec![FullBackup {
+                        name: "backup-full".into(),
+                        when: now(),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            );
+            layout.save();
+
+            assert!(path.joined("mapping.yaml").is_file());
+            assert!(layout.delete_backup(&BackupId::Named("backup-full".into())));
+            assert!(!path.exists());
         }
 
         #[test]
